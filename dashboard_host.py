@@ -286,6 +286,11 @@ def index():
                     }
                 }
                 
+                .metrics-wrapper {
+                    display: flex;
+                    flex-direction: column;
+                }
+                
                 .metric-container {
                     margin-bottom: 18px;
                 }
@@ -381,6 +386,77 @@ def index():
                     font-weight: 700;
                     color: #00ffaa;
                 }
+
+                /* Responsive HUD layout for smaller/landscape displays (e.g. Raspberry Pi 7" 800x480 screen) */
+                @media (max-width: 850px), (max-height: 550px) {
+                    .hud-panel {
+                        top: auto;
+                        bottom: 15px;
+                        left: 15px;
+                        right: 15px;
+                        width: auto;
+                        padding: 12px 20px;
+                        display: flex;
+                        flex-direction: row;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 20px;
+                        border-radius: 12px;
+                    }
+                    
+                    .hud-panel:hover {
+                        transform: scale(1.01);
+                    }
+                    
+                    .hud-header {
+                        border-bottom: none;
+                        padding-bottom: 0;
+                        margin-bottom: 0;
+                        flex-shrink: 0;
+                    }
+                    
+                    .hud-header > div {
+                        flex-direction: column !important;
+                        align-items: flex-start !important;
+                        gap: 4px;
+                    }
+                    
+                    .metrics-wrapper {
+                        flex-direction: row;
+                        gap: 24px;
+                        flex-grow: 1;
+                        justify-content: center;
+                    }
+                    
+                    .metric-container {
+                        margin-bottom: 0;
+                        min-width: 100px;
+                        flex: 1;
+                        max-width: 180px;
+                    }
+                    
+                    .metric-value {
+                        font-size: 22px;
+                    }
+                    
+                    .metric-unit {
+                        font-size: 11px;
+                    }
+                    
+                    .gauge-bar {
+                        margin-top: 4px;
+                    }
+                    
+                    .hud-footer {
+                        border-top: none;
+                        padding-top: 0;
+                        margin-top: 0;
+                        flex-direction: column;
+                        align-items: flex-end;
+                        gap: 4px;
+                        flex-shrink: 0;
+                    }
+                }
             </style>
         </head>
         <body>
@@ -397,36 +473,38 @@ def index():
                     </div>
                 </div>
                 
-                <div class="metric-container">
-                    <div class="metric-label">VOLTAGE</div>
-                    <div class="metric-value-wrapper">
-                        <span id="val-voltage" class="metric-value color-voltage">0.00</span>
-                        <span class="metric-unit">V</span>
+                <div class="metrics-wrapper">
+                    <div class="metric-container">
+                        <div class="metric-label">VOLTAGE</div>
+                        <div class="metric-value-wrapper">
+                            <span id="val-voltage" class="metric-value color-voltage">0.00</span>
+                            <span class="metric-unit">V</span>
+                        </div>
+                        <div class="gauge-bar">
+                            <div id="bar-voltage" class="gauge-fill bg-voltage" style="width: 0%"></div>
+                        </div>
                     </div>
-                    <div class="gauge-bar">
-                        <div id="bar-voltage" class="gauge-fill bg-voltage" style="width: 0%"></div>
-                    </div>
-                </div>
 
-                <div class="metric-container">
-                    <div class="metric-label">CURRENT</div>
-                    <div class="metric-value-wrapper">
-                        <span id="val-current" class="metric-value color-current">0.00</span>
-                        <span class="metric-unit">A</span>
+                    <div class="metric-container">
+                        <div class="metric-label">CURRENT</div>
+                        <div class="metric-value-wrapper">
+                            <span id="val-current" class="metric-value color-current">0.00</span>
+                            <span class="metric-unit">A</span>
+                        </div>
+                        <div class="gauge-bar">
+                            <div id="bar-current" class="gauge-fill bg-current" style="width: 0%"></div>
+                        </div>
                     </div>
-                    <div class="gauge-bar">
-                        <div id="bar-current" class="gauge-fill bg-current" style="width: 0%"></div>
-                    </div>
-                </div>
 
-                <div class="metric-container">
-                    <div class="metric-label">POWER DRAW</div>
-                    <div class="metric-value-wrapper">
-                        <span id="val-power" class="metric-value color-power">0.00</span>
-                        <span class="metric-unit">W</span>
-                    </div>
-                    <div class="gauge-bar">
-                        <div id="bar-power" class="gauge-fill bg-power" style="width: 0%"></div>
+                    <div class="metric-container">
+                        <div class="metric-label">POWER DRAW</div>
+                        <div class="metric-value-wrapper">
+                            <span id="val-power" class="metric-value color-power">0.00</span>
+                            <span class="metric-unit">W</span>
+                        </div>
+                        <div class="gauge-bar">
+                            <div id="bar-power" class="gauge-fill bg-power" style="width: 0%"></div>
+                        </div>
                     </div>
                 </div>
 
