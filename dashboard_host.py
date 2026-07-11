@@ -128,27 +128,71 @@ def generate_3d_helix():
     
     amps[np.abs(amps) < 0.15] = 0.0
 
-    fig = go.Figure(data=[
-        go.Scatter3d(
-            x=amps,
-            y=voltage,
-            z=t, 
-            mode='lines',
-            line=dict(
-                width=8,
-                color=voltage,
-                colorscale=[[0, 'red'], [1, 'cyan']],
-                cmin=10.0, cmax=V_REF,
-            )
-        )
-    ])
+    trace_history = go.Scatter3d(
+        x=amps,
+        y=voltage,
+        z=t, 
+        mode='lines+markers',
+        line=dict(
+            width=3,
+            color=voltage,
+            colorscale=[[0, 'red'], [1, 'cyan']],
+            cmin=10.0, cmax=V_REF,
+        ),
+        marker=dict(
+            size=3,
+            color=voltage,
+            colorscale=[[0, 'red'], [1, 'cyan']],
+            cmin=10.0, cmax=V_REF,
+            opacity=0.7
+        ),
+        name='History'
+    )
+    
+    trace_head = go.Scatter3d(
+        x=[amps[-1]],
+        y=[voltage[-1]],
+        z=[t[-1]],
+        mode='markers',
+        marker=dict(
+            size=10,
+            color='#ffff00',
+            symbol='circle',
+            line=dict(color='#ffffff', width=2),
+            opacity=1.0
+        ),
+        name='Current'
+    )
+
+    fig = go.Figure(data=[trace_history, trace_head])
 
     fig.update_layout(
         template='plotly_dark',
         scene=dict(
-            xaxis=dict(title='AMPS (A)', color='#ffff00', range=[-1, 12]),
-            yaxis=dict(title='VOLTAGE (V)', color='#00ffff', range=[10, V_REF+0.5]),
-            zaxis=dict(title='ELAPSED TIME (s)', color='#ffffff', range=[time_end, time_start]),
+            xaxis=dict(
+                title='AMPS (A)', 
+                color='#ffff00', 
+                range=[-1, 12],
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            ),
+            yaxis=dict(
+                title='VOLTAGE (V)', 
+                color='#00ffff', 
+                range=[10, V_REF+0.5],
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            ),
+            zaxis=dict(
+                title='ELAPSED TIME (s)', 
+                color='#ffffff', 
+                range=[time_end, time_start],
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            ),
             camera=dict(
                 eye=dict(x=1.8, y=1.4, z=1.2), 
                 up=dict(x=0, y=0, z=1),
@@ -157,7 +201,8 @@ def generate_3d_helix():
         ),
         margin=dict(r=0, l=0, t=0, b=0),
         hovermode=False, 
-        dragmode=False 
+        dragmode=False,
+        showlegend=False
     )
 
     return op.plot(fig, output_type='div', include_plotlyjs=False, show_link=False, link_text='')
@@ -171,17 +216,63 @@ def api_graph():
         y_data = list(historical_data['voltage'])
         z_data = list(historical_data['relative_time'])
 
+    trace_history = go.Scatter3d(
+        x=x_data,
+        y=y_data,
+        z=z_data,
+        mode='lines+markers',
+        line=dict(width=3, color=y_data, colorscale='Viridis'),
+        marker=dict(
+            size=4,
+            color=y_data,
+            colorscale='Viridis',
+            opacity=0.7
+        ),
+        name='History'
+    )
+
+    trace_head = go.Scatter3d(
+        x=[x_data[-1]],
+        y=[y_data[-1]],
+        z=[z_data[-1]],
+        mode='markers',
+        marker=dict(
+            size=10,
+            color='#ffff00',
+            symbol='circle',
+            line=dict(color='#ffffff', width=2),
+            opacity=1.0
+        ),
+        name='Current'
+    )
+
     # Generate the figure based on the *current* historical_data
-    fig = go.Figure(data=[
-        go.Scatter3d(
-            x=x_data,
-            y=y_data,
-            z=z_data,
-            mode='lines',
-            line=dict(width=5, color=y_data, colorscale='Viridis')
-        )
-    ])
-    fig.update_layout(template='plotly_dark', margin=dict(l=0, r=0, t=0, b=0))
+    fig = go.Figure(data=[trace_history, trace_head])
+    fig.update_layout(
+        template='plotly_dark', 
+        scene=dict(
+            xaxis=dict(
+                title='AMPS (A)',
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            ),
+            yaxis=dict(
+                title='VOLTAGE (V)',
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            ),
+            zaxis=dict(
+                title='ELAPSED TIME (s)',
+                gridcolor='rgba(255, 255, 255, 0.1)',
+                showbackground=True,
+                backgroundcolor='rgba(10, 15, 30, 0.5)'
+            )
+        ),
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=False
+    )
     return fig.to_json()
 
 # 2. Update your HTML template to refresh the graph automatically
