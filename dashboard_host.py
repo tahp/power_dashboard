@@ -27,7 +27,7 @@ except Exception as e:
 V_REF = 12.60 
 VOLTAGE_DIVIDER_RATIO = 5.0
 ACS712_SENSITIVITY = 0.100  
-ZERO_CURRENT_OFFSET = 2.45  
+ZERO_CURRENT_OFFSET = 2.60  
 
 # --- Internal Data Logger ---
 MAX_LOG_ENTRIES = 120 
