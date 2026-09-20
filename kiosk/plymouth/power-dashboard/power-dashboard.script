@@ -1,6 +1,10 @@
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
 
+# These assets are authored for the Pi's 800x480 display. Keeping the image
+# dimensions equal to the framebuffer avoids relying on backend-specific
+# clipping/scaling behavior during the early boot framebuffer handoff.
+
 # Keep the display opaque while the system starts or stops so console output is
 # not visible through the splash screen.
 Window.SetBackgroundTopColor(0, 0, 0);

@@ -89,8 +89,8 @@ dashboard fills the display, the desktop panel is absent, telemetry updates,
 and Camera/Home navigation works. The graph and fonts still use external CDNs,
 so those assets require network access as before.
 
-The kiosk installer also replaces the Raspberry Pi/Plymouth boot splash with a
-black screen showing `loading..` during startup and `shutting down` during
+The kiosk installer also replaces the Raspberry Pi/Plymouth boot splash with
+the custom 800x480 boot artwork during startup and shutdown artwork during
 poweroff. The custom Plymouth theme intentionally does not register a
 status-message callback, and the installer removes the display console plus
 systemd status output from the kernel command line, so verbose boot text is
