@@ -1,0 +1,2 @@
+# The dashboard service runs as pugs, but these actions require root.
+pugs ALL=(root) NOPASSWD: /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff

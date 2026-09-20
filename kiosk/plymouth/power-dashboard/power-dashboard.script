@@ -1,0 +1,22 @@
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+
+# Keep the display opaque while the system starts or stops so console output is
+# not visible through the splash screen.
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+if (Plymouth.GetMode() == "shutdown")
+{
+    splash = Image("shutdown.png");
+}
+else
+{
+    splash = Image("boot.png");
+}
+
+splash.SetPosition((screen_width - splash.GetWidth()) / 2,
+                   (screen_height - splash.GetHeight()) / 2,
+                   100);
+
+# Intentionally no status callback: kernel/systemd messages never appear on screen.

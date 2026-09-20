@@ -3,7 +3,7 @@ import time
 import threading
 import cv2
 import numpy as np
-from flask import Flask, render_template_string, jsonify, Response
+from flask import Flask, render_template_string, jsonify, Response, request
 import plotly.graph_objects as go
 import random
 import math
@@ -41,8 +41,10 @@ def init_camera():
     global camera, camera_available
     
     try:
-        # Kill any processes that might be hogging the camera
-        kill_camera_processes()
+        camera_available = False
+        if camera is not None:
+            camera.release()
+            camera = None
         
         camera_index = find_available_camera()
         if camera_index is not None:
@@ -198,8 +200,10 @@ def generate_frames():
             with camera_lock:
                 success, frame = camera.read()
                 if not success or frame is None:
-                    time.sleep(0.1)
-                    continue
+                    camera_available = False
+                    camera.release()
+                    camera = None
+                    break
                 
                 # Add sci-fi overlay effects
                 frame = add_scifi_overlay(frame)
@@ -209,8 +213,9 @@ def generate_frames():
                     [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ret:
                     frame_bytes = buffer.tobytes()
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
                 
         except Exception as e:
             print(f"⚠️ Camera frame error: {e}")
@@ -223,10 +228,6 @@ def add_scifi_overlay(frame):
     """Add sci-fi HUD overlay to camera feed"""
     try:
         height, width = frame.shape[:2]
-        
-        # 1. Add scan lines (subtle)
-        for y in range(0, height, 4):
-            cv2.line(frame, (0, y), (width, y), (0, 255, 0, 20), 1)
         
         # 2. Add corner brackets
         bracket_size = 25
@@ -261,14 +262,6 @@ def add_scifi_overlay(frame):
         # 5. Add FPS counter
         cv2.putText(frame, f"{int(30)} FPS", (20, 50), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-        
-        # 6. Crosshair (subtle)
-        cx, cy = width // 2, height // 2
-        cv2.circle(frame, (cx, cy), 15, (0, 255, 255, 50), 1)
-        cv2.line(frame, (cx - 25, cy), (cx - 15, cy), (0, 255, 255, 50), 1)
-        cv2.line(frame, (cx + 15, cy), (cx + 25, cy), (0, 255, 255, 50), 1)
-        cv2.line(frame, (cx, cy - 25), (cx, cy - 15), (0, 255, 255, 50), 1)
-        cv2.line(frame, (cx, cy + 15), (cx, cy + 25), (0, 255, 255, 50), 1)
         
         # 7. Subtle vignette effect
         mask = np.zeros((height, width), np.uint8)
@@ -307,7 +300,10 @@ def api_data():
 
 @app.route('/camera_status')
 def camera_status():
-    """Check if camera is available"""
+    """Check the camera, retrying detection if it was unavailable at startup."""
+    with camera_lock:
+        if not camera_available:
+            init_camera()
     return jsonify({
         'available': camera_available,
         'stream_url': '/video_feed' if camera_available else None
@@ -320,7 +316,35 @@ def toggle_camera():
     camera_available = not camera_available
     return jsonify({'available': camera_available})
 
-# --- MAIN HTML WITH CAMERA PIP ---
+@app.route('/api/power', methods=['POST'])
+def power_action():
+    """Run one of the two explicit system power actions from the dashboard."""
+    payload = request.get_json(silent=True) or {}
+    action = payload.get('action')
+    commands = {
+        'restart': ['/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'reboot'],
+        'shutdown': ['/usr/bin/sudo', '-n', '/usr/bin/systemctl', 'poweroff'],
+    }
+    command = commands.get(action)
+    if command is None:
+        return jsonify({'error': 'Unsupported power action'}), 400
+
+    try:
+        # Check the authorization result before replying, otherwise the UI can
+        # say "Shutting down" forever when systemd rejects the request.
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"[ERROR]: Unable to {action}: {error}", flush=True)
+        return jsonify({'error': f'Unable to {action}'}), 500
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        print(f"[ERROR]: Unable to {action}: {detail}", flush=True)
+        return jsonify({'error': f'Unable to {action}'}), 500
+
+    return jsonify({'status': 'accepted', 'action': action})
+
+# --- MAIN DASHBOARD HTML ---
 @app.route('/')
 def index():
     return render_template_string("""
@@ -358,125 +382,27 @@ def index():
                 z-index: 1;
             }
             
-            /* ---------- CAMERA PIP WINDOW ---------- */
-            #camera-pip {
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                width: 320px;
-                height: 240px;
-                z-index: 20;
-                border: 2px solid rgba(0, 238, 255, 0.3);
-                border-radius: 12px;
-                overflow: hidden;
-                box-shadow: 
-                    0 0 30px rgba(0, 238, 255, 0.1),
-                    inset 0 0 30px rgba(0, 238, 255, 0.05);
-                background: rgba(2, 8, 18, 0.9);
-                transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-                cursor: pointer;
-                resize: both;
+            [hidden] { display: none !important; }
+            #camera-player {
+                position: absolute; inset: 0; overflow: hidden;
+                border-radius: inherit;
             }
-            
-            #camera-pip:hover {
-                border-color: rgba(0, 238, 255, 0.8);
-                box-shadow: 
-                    0 0 50px rgba(0, 238, 255, 0.2),
-                    inset 0 0 50px rgba(0, 238, 255, 0.1);
-                transform: scale(1.02);
-                z-index: 30;
+            #camera-feed {
+                position: absolute; inset: 0; display: block;
+                width: 100%; height: 100%; object-fit: cover; object-position: center;
             }
-            
-            #camera-pip img {
-                width: 100%;
-                height: 100%;
-                object-fit: cover;
+            .camera-controls {
+                display: flex; flex-wrap: wrap; flex-shrink: 0;
+                position: relative; z-index: 1;
+                gap: 12px; margin-top: auto; padding-top: 12px;
             }
-            
-            #camera-pip .pip-label {
-                position: absolute;
-                top: 8px;
-                left: 12px;
-                font-family: 'Orbitron', sans-serif;
-                font-size: 8px;
-                letter-spacing: 2px;
-                color: rgba(0, 238, 255, 0.6);
-                text-shadow: 0 0 10px rgba(0, 238, 255, 0.3);
-                background: rgba(2, 8, 18, 0.7);
-                padding: 4px 10px;
-                border-radius: 4px;
-                border: 1px solid rgba(0, 238, 255, 0.1);
+            .camera-controls button {
+                background: #051220; color: #00eeff; border: 1px solid #00eeff45;
+                border-radius: 8px; padding: 12px 16px; cursor: pointer; font: inherit;
             }
-            
-            #camera-pip .pip-status {
-                position: absolute;
-                bottom: 8px;
-                right: 12px;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                background: rgba(2, 8, 18, 0.7);
-                padding: 4px 10px;
-                border-radius: 4px;
-                border: 1px solid rgba(0, 255, 0, 0.2);
-            }
-            
-            #camera-pip .pip-dot {
-                width: 4px;
-                height: 4px;
-                border-radius: 50%;
-                background: #00ff88;
-                animation: pulse-dot 2s infinite;
-            }
-            
-            #camera-pip .pip-status-text {
-                font-size: 7px;
-                letter-spacing: 1px;
-                color: rgba(255, 255, 255, 0.4);
-            }
-            
-            #camera-pip .pip-controls {
-                position: absolute;
-                bottom: 8px;
-                left: 12px;
-                display: flex;
-                gap: 6px;
-            }
-            
-            #camera-pip .pip-btn {
-                background: rgba(2, 8, 18, 0.7);
-                border: 1px solid rgba(0, 238, 255, 0.2);
-                color: rgba(0, 238, 255, 0.6);
-                padding: 3px 8px;
-                border-radius: 4px;
-                font-size: 7px;
-                cursor: pointer;
-                font-family: 'Orbitron', sans-serif;
-                letter-spacing: 1px;
-                transition: all 0.3s ease;
-            }
-            
-            #camera-pip .pip-btn:hover {
-                background: rgba(0, 238, 255, 0.1);
-                border-color: rgba(0, 238, 255, 0.5);
-                color: #00ffff;
-            }
-            
-            #camera-pip .pip-btn.muted {
-                opacity: 0.3;
-            }
-            
-            .pip-minimized {
-                width: 60px !important;
-                height: 45px !important;
-            }
-            
-            .pip-minimized .pip-label,
-            .pip-minimized .pip-status,
-            .pip-minimized .pip-controls {
-                display: none !important;
-            }
-            
+            .camera-controls button:focus-visible { outline: 2px solid #00eeff; }
+            .camera-controls button:disabled { opacity: .4; cursor: default; }
+
             @keyframes pulse-dot {
                 0%, 100% { opacity: 1; transform: scale(1); }
                 50% { opacity: 0.3; transform: scale(0.8); }
@@ -651,12 +577,6 @@ def index():
             }
             
             @media (max-width: 850px), (max-height: 600px) {
-                #camera-pip {
-                    width: 200px;
-                    height: 150px;
-                    top: 10px;
-                    right: 10px;
-                }
                 
                 .hud-container {
                     bottom: 15px;
@@ -711,33 +631,117 @@ def index():
                     width: 100%;
                 }
                 
-                #camera-pip {
-                    width: 150px;
-                    height: 112px;
-                    top: 5px;
-                    right: 5px;
-                }
             }
+            :root { --dock-space: 88px; }
+            .app-dock {
+                position: fixed; left: 12px; top: 50%; transform: translateY(-50%);
+                z-index: 50; display: flex; flex-direction: column; gap: 10px;
+                padding: 10px; background: rgba(5, 18, 32, .94);
+                border: 1px solid rgba(0, 238, 255, .25); border-radius: 20px;
+                box-shadow: 0 12px 40px #0008;
+            }
+            .dock-item {
+                display: grid; place-items: center; width: 44px; height: 48px;
+                border: 1px solid transparent; border-radius: 12px;
+                background: transparent; color: #8aa4b8; cursor: pointer;
+            }
+            .dock-item svg { width: 23px; height: 23px; }
+            .dock-item:hover, .dock-item[aria-current="page"] {
+                color: #00eeff; background: #00eeff14; border-color: #00eeff45;
+            }
+            .dock-item.power-item { color: #ff6688; }
+            .dock-item.power-item:hover { color: #ff6688; background: #ff668814; border-color: #ff668845; }
+            .dock-item:focus-visible { outline: 2px solid #00eeff; outline-offset: 3px; }
+            .dock-item:disabled { opacity: .3; cursor: default; background: none; border-color: transparent; }
+            #plot-div { left: var(--dock-space); width: calc(100vw - var(--dock-space)); }
+            .hud-container { left: calc(var(--dock-space) + 12px); }
+            #camera-view {
+                position: fixed; inset: 24px 24px 24px calc(var(--dock-space) + 12px);
+                padding: 24px; border: 1px solid #00eeff30; border-radius: 18px;
+                background: #051220; display: flex; flex-direction: column; z-index: 2;
+            }
+            #camera-view h1, #camera-message {
+                position: relative; z-index: 1; align-self: flex-start;
+                background: #051220e6; padding: 6px 10px; border-radius: 6px;
+            }
+            #camera-view h1 { flex-shrink: 0; font-family: 'Orbitron', sans-serif; font-size: 18px; color: #00eeff; }
+            #camera-message { flex-shrink: 0; margin: 12px 0; color: #8aa4b8; line-height: 1.6; }
+            body[data-view="camera"] #plot-div,
+            body[data-view="camera"] .hud-container { visibility: hidden; pointer-events: none; }
+            @media (max-width: 500px) {
+                :root { --dock-space: 72px; }
+                .app-dock { left: 6px; padding: 6px; gap: 8px; }
+                #camera-view { inset: 12px 12px 12px calc(var(--dock-space) + 6px); padding: 16px; }
+            }
+
+            .power-modal[hidden] { display: none; }
+            .power-modal {
+                position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+                padding: 24px; background: rgba(0, 0, 0, .62); backdrop-filter: blur(6px);
+            }
+            .power-dialog {
+                width: min(360px, 100%); padding: 24px; border: 1px solid #ff668866;
+                border-radius: 16px; background: #071321f5; box-shadow: 0 18px 60px #000b;
+                text-align: center;
+            }
+            .power-dialog h2 {
+                color: #ff6688; font: 700 18px 'Orbitron', sans-serif;
+                letter-spacing: 2px; margin-bottom: 10px;
+            }
+            .power-dialog p { color: #9bb0bf; font-size: 12px; margin-bottom: 20px; }
+            .power-actions { display: grid; gap: 10px; }
+            .power-actions button {
+                min-height: 44px; border: 1px solid #ff668866; border-radius: 8px;
+                background: #ff668812; color: #ffb3c4; cursor: pointer; font: inherit;
+            }
+            .power-actions button:hover, .power-actions button:focus-visible {
+                background: #ff66882b; border-color: #ff6688; outline: none;
+            }
+            .power-actions .cancel { color: #9bb0bf; border-color: #9bb0bf44; background: transparent; }
+            .power-actions .cancel:hover, .power-actions .cancel:focus-visible { border-color: #9bb0bf; background: #9bb0bf12; }
+            .power-status { min-height: 16px; margin: 14px 0 0; color: #ffb3c4; font-size: 11px; }
         </style>
     </head>
-    <body>
-        <!-- 3D Visualization -->
-        <div id="plot-div"></div>
-        
-        <!-- Camera PiP Window -->
-        <div id="camera-pip" class="pip-window">
-            <img id="camera-feed" src="" alt="Camera Feed">
-            <div class="pip-label">📹 SURVEILLANCE</div>
-            <div class="pip-status">
-                <span class="pip-dot"></span>
-                <span class="pip-status-text">LIVE</span>
-            </div>
-            <div class="pip-controls">
-                <button class="pip-btn" onclick="toggleCamera()">⏸</button>
-                <button class="pip-btn" onclick="toggleMinimize()">▢</button>
-                <button class="pip-btn" onclick="toggleFullscreen()">⛶</button>
+    <body data-view="home">
+        <nav class="app-dock" aria-label="Main navigation">
+            <a class="dock-item" href="#home" aria-label="Home" title="Home" aria-current="page" data-view="home">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10 9-7 9 7M5 9v12h5v-7h4v7h5V9"/></svg>
+            </a>
+            <a class="dock-item" href="#camera" aria-label="Camera" title="Camera" data-view="camera">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h4l2-3h6l2 3h4v13H3z"/><circle cx="12" cy="13" r="4"/></svg>
+            </a>
+            <button class="dock-item" disabled aria-label="Apps — coming soon" title="Apps — coming soon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            </button>
+            <button class="dock-item power-item" type="button" aria-label="Power options" title="Power options" onclick="openPowerMenu()">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 3v8"/><path d="M6.2 6.2a8 8 0 1 0 11.6 0"/></svg>
+            </button>
+        </nav>
+        <div id="power-modal" class="power-modal" role="presentation" hidden>
+            <div class="power-dialog" role="dialog" aria-modal="true" aria-labelledby="power-heading">
+                <h2 id="power-heading">POWER OPTIONS</h2>
+                <p>Choose an action for this system.</p>
+                <div class="power-actions">
+                    <button type="button" onclick="runPowerAction('restart')">Restart</button>
+                    <button type="button" onclick="runPowerAction('shutdown')">Shutdown</button>
+                    <button type="button" class="cancel" onclick="closePowerMenu()">Cancel</button>
+                </div>
+                <p id="power-status" class="power-status" role="status" aria-live="polite"></p>
             </div>
         </div>
+        <section id="camera-view" aria-labelledby="camera-heading" hidden>
+            <h1 id="camera-heading">Camera</h1>
+            <p id="camera-message" role="status">Select Camera to start the live view.</p>
+            <div id="camera-player" hidden>
+                <img id="camera-feed" alt="Live camera feed">
+            </div>
+            <div class="camera-controls">
+                <button id="camera-pause" type="button" onclick="toggleCamera()" disabled>Pause</button>
+                <button type="button" onclick="initCamera()">Retry connection</button>
+            </div>
+        </section>
+        <!-- 3D Visualization -->
+        <div id="plot-div"></div>
         
         <!-- HUD (existing) -->
         <div class="hud-container">
@@ -796,8 +800,10 @@ def index():
             const startTime = Date.now();
             let graphDiv = document.getElementById('plot-div');
             let currentData = { time: [], voltage: [], amps: [] };
-            let cameraActive = true;
-            let cameraMinimized = false;
+            let cameraActive = false;
+            let cameraRequest = 0;
+            const powerModal = document.getElementById('power-modal');
+            const powerStatus = document.getElementById('power-status');
             
             // --- SCI-FI COLORS ---
             const colors = {
@@ -820,73 +826,110 @@ def index():
                 ]
             };
             
+            function navigate() {
+                const view = location.hash === '#camera' ? 'camera' : 'home';
+                document.body.dataset.view = view;
+                document.getElementById('camera-view').hidden = view !== 'camera';
+                document.querySelectorAll('.dock-item[data-view]').forEach(item => {
+                    if (item.dataset.view === view) item.setAttribute('aria-current', 'page');
+                    else item.removeAttribute('aria-current');
+                });
+                stopCamera();
+                if (view === 'camera') initCamera();
+                if (view === 'home' && window.Plotly && graphDiv.data) {
+                    requestAnimationFrame(() => Plotly.Plots.resize(graphDiv));
+                }
+            }
+            window.addEventListener('hashchange', navigate);
+
+            function openPowerMenu() {
+                powerStatus.textContent = '';
+                powerModal.hidden = false;
+                powerModal.querySelector('button').focus();
+            }
+
+            function closePowerMenu() {
+                powerModal.hidden = true;
+            }
+
+            powerModal.addEventListener('click', (event) => {
+                if (event.target === powerModal) closePowerMenu();
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && !powerModal.hidden) closePowerMenu();
+            });
+
+            async function runPowerAction(action) {
+                const buttons = powerModal.querySelectorAll('button');
+                buttons.forEach(button => button.disabled = true);
+                powerStatus.textContent = action === 'restart' ? 'Restarting system…' : 'Shutting down system…';
+                try {
+                    const response = await fetch('/api/power', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({action})
+                    });
+                    if (!response.ok) throw new Error('Power action failed');
+                } catch (error) {
+                    buttons.forEach(button => button.disabled = false);
+                    powerStatus.textContent = `Unable to ${action}. Check system permissions.`;
+                }
+            }
+
             // --- CAMERA FUNCTIONS ---
-            function initCamera() {
-                fetch('/camera_status')
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.available) {
-                            document.getElementById('camera-feed').src = '/video_feed';
-                            console.log('📹 Camera feed started');
-                        } else {
-                            document.getElementById('camera-pip').style.display = 'none';
-                            console.log('📹 No camera detected');
-                        }
-                    })
-                    .catch(() => {
-                        document.getElementById('camera-pip').style.display = 'none';
-                    });
+            function stopCamera() {
+                cameraRequest++;
+                cameraActive = false;
+                document.getElementById('camera-feed').removeAttribute('src');
+                document.getElementById('camera-player').hidden = true;
+                document.getElementById('camera-pause').disabled = true;
             }
-            
+
+            function cameraError(message) {
+                stopCamera();
+                document.getElementById('camera-message').textContent = message;
+            }
+
+            async function initCamera() {
+                stopCamera();
+                const request = cameraRequest;
+                document.getElementById('camera-message').textContent = 'Checking camera connection…';
+                try {
+                    const response = await fetch('/camera_status', {cache: 'no-store'});
+                    if (!response.ok) throw new Error('Camera status failed');
+                    const data = await response.json();
+                    if (request !== cameraRequest || document.body.dataset.view !== 'camera') return;
+                    if (!data.available) {
+                        cameraError('Camera unavailable. Check the USB connection, then tap Retry connection.');
+                        return;
+                    }
+                    cameraActive = true;
+                    document.getElementById('camera-player').hidden = false;
+                    document.getElementById('camera-pause').disabled = false;
+                    document.getElementById('camera-pause').textContent = 'Pause';
+                    document.getElementById('camera-message').textContent = 'Streaming camera';
+                    document.getElementById('camera-feed').src = '/video_feed';
+                } catch (error) {
+                    if (request !== cameraRequest || document.body.dataset.view !== 'camera') return;
+                    cameraError('Unable to check the camera. Use Retry connection to try again.');
+                }
+            }
+
+            document.getElementById('camera-feed').addEventListener('error', () => {
+                if (cameraActive) cameraError('Camera stream interrupted. Use Retry connection to try again.');
+            });
+
             function toggleCamera() {
-                cameraActive = !cameraActive;
-                const img = document.getElementById('camera-feed');
-                const btn = document.querySelector('.pip-controls .pip-btn:first-child');
-                
-                if (cameraActive) {
-                    img.src = '/video_feed';
-                    btn.textContent = '⏸';
-                    btn.classList.remove('muted');
-                } else {
-                    img.src = '';
-                    btn.textContent = '▶';
-                    btn.classList.add('muted');
+                if (!cameraActive) {
+                    initCamera();
+                    return;
                 }
+                stopCamera();
+                document.getElementById('camera-message').textContent = 'Camera paused';
+                document.getElementById('camera-pause').disabled = false;
+                document.getElementById('camera-pause').textContent = 'Resume';
             }
-            
-            function toggleMinimize() {
-                cameraMinimized = !cameraMinimized;
-                const pip = document.getElementById('camera-pip');
-                const btn = document.querySelector('.pip-controls .pip-btn:nth-child(2)');
-                
-                if (cameraMinimized) {
-                    pip.classList.add('pip-minimized');
-                    btn.textContent = '▣';
-                } else {
-                    pip.classList.remove('pip-minimized');
-                    btn.textContent = '▢';
-                }
-            }
-            
-            function toggleFullscreen() {
-                const pip = document.getElementById('camera-pip');
-                if (!document.fullscreenElement) {
-                    pip.requestFullscreen().catch(err => {
-                        // Fallback: make it bigger
-                        if (!cameraMinimized) {
-                            pip.style.width = '640px';
-                            pip.style.height = '480px';
-                            setTimeout(() => {
-                                pip.style.width = '';
-                                pip.style.height = '';
-                            }, 3000);
-                        }
-                    });
-                } else {
-                    document.exitFullscreen();
-                }
-            }
-            
+
             // --- CREATE GRAPH ---
             function createGraph(timeData, voltageData, currentData) {
                 function smooth(data, window = 3) {
@@ -1136,7 +1179,7 @@ def index():
             }
             
             // --- INITIALIZE ---
-            initCamera();
+            navigate();
             updateGraph();
             updateHUD();
             
@@ -1146,10 +1189,12 @@ def index():
             
             // --- RESIZE ---
             window.addEventListener('resize', () => {
-                Plotly.Plots.resize('plot-div');
+                if (document.body.dataset.view === 'home' && window.Plotly && graphDiv.data) {
+                    Plotly.Plots.resize(graphDiv);
+                }
             });
             
-            console.log('⚡ Holographic Dashboard with Camera PiP initialized');
+            console.log('⚡ Holographic Dashboard with Embedded Camera initialized');
         </script>
     </body>
     </html>
@@ -1157,14 +1202,14 @@ def index():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"\n[INFO]: ⚡ Sci-Fi Holographic Dashboard with Camera PiP")
+    print(f"\n[INFO]: ⚡ Sci-Fi Holographic Dashboard with Embedded Camera")
     print(f"Dashboard running at: http://localhost:{port}")
     
     if camera_available:
         print(f"📹 Camera feed: http://localhost:{port}/video_feed")
-        print("   Controls: ⏸ Pause | ▢ Minimize | ⛶ Fullscreen")
+        print("   Select Camera in the left navigation to view the embedded feed.")
     else:
-        print(f"📹 No camera detected - PiP will be hidden")
+        print(f"📹 No camera detected - Camera page will show connection instructions")
         print("   To use camera: plug in USB camera and restart")
     
     print("\nPress Ctrl+C to stop\n")

@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Power Dashboard
+Description=Power Dashboard loading and shutdown screen
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/power-dashboard
+ScriptFile=/usr/share/plymouth/themes/power-dashboard/power-dashboard.script

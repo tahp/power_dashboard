@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Power Dashboard
+Comment=Dedicated Power Dashboard kiosk
+Exec=/usr/local/libexec/power-dashboard-session
+Type=Application
+DesktopNames=labwc

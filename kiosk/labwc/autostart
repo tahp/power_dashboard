@@ -1,0 +1,2 @@
+#!/bin/sh
+# Intentionally empty: no desktop panel, file manager or XDG autostart apps.
