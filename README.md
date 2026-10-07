@@ -8,10 +8,24 @@ A real-time 3D telemetry dashboard designed for Raspberry Pi hardware. It visual
 - Kiosk-mode browser interface.
 
 ## Setup
-1. Clone this repo: `git clone https://github.com/tahp/power-dashboard.git`
-2. Install dependencies: `pip install -r requirements.txt`
+1. Clone this repo: `git clone https://github.com/tahp/power_dashboard.git`
+2. Install dependencies using the Raspberry Pi instructions below.
 3. Configure I2C: Ensure your user is in the `i2c` group (`sudo usermod -aG i2c $USER`).
-4. Run the dashboard: `python3 dashboard_host.py`
+4. Run the dashboard: `.venv/bin/python dashboard_host.py`
+
+For development on a non-Pi computer, create a virtual environment and run
+`pip install -r requirements.txt`. The application will automatically use
+mock telemetry when Raspberry Pi I2C hardware is unavailable.
+
+On Raspberry Pi OS, use the system camera packages and a virtual environment
+that can see them:
+
+```bash
+sudo apt update
+sudo apt install python3-flask python3-numpy python3-opencv python3-picamera2 python3-venv
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements-pi.txt
+```
 
 ## Deployment
 This project is designed to run as a systemd service. Update the paths in `dashboard.service` to match your local installation directory.
@@ -20,7 +34,7 @@ This project is designed to run as a systemd service. Update the paths in `dashb
 
 ## Embedded camera page
 
-The left Camera icon switches the main content to a live USB/V4L2 camera
+The left Camera icon switches the main content to a live CSI or USB camera
 feed inside the dashboard. Home restores the telemetry graph and HUD. The
 navigation stays visible; no separate window or fullscreen player is opened.
 Pause/Resume controls viewing in this browser. Leaving Camera stops its stream;
@@ -28,16 +42,17 @@ sensor polling continues. Retry connection rescans hardware when the camera is u
 
 ### Run and test on the Raspberry Pi
 
-1. Connect a USB camera before starting the app. This app uses OpenCV/V4L2;
-   it does not currently implement a Picamera2/CSI camera backend.
+1. Connect a Raspberry Pi CSI camera or a USB camera before starting the app.
+   The application prefers Picamera2/libcamera for CSI cameras and falls back
+   to OpenCV/V4L2 for USB cameras.
 2. In the existing Python environment used by this project, run:
    ```bash
    cd ~/power-dashboard
-   python3 dashboard_host.py
+   .venv/bin/python dashboard_host.py
    ```
-   If OpenCV is missing on Raspberry Pi OS, install it with
-   `sudo apt install python3-opencv` (a virtual environment must have access to
-   system packages). No new Python dependencies are needed for this change.
+   If a camera library is missing, install `python3-picamera2` for CSI cameras
+   or `python3-opencv` for USB cameras. A virtual environment must be created
+   with `--system-site-packages` to access these Raspberry Pi OS packages.
 3. Open `http://localhost:5000` in the Pi's browser, or
    `http://<PI-IP>:5000` from another device. If `PORT` is set, use that port.
    Restart the existing service instead if it already owns the port, then
@@ -53,7 +68,7 @@ sensor polling continues. Retry connection rescans hardware when the camera is u
    connection to detect the camera without restarting the app.
 
 Camera diagnostics: `curl http://localhost:5000/camera_status` should report
-`"available": true` when startup detected a camera. The `/video_feed` endpoint
+`"available": true` and a `picamera2` or `v4l2` backend when detection succeeds. The `/video_feed` endpoint
 is the raw MJPEG stream; use the dashboard's Camera icon for normal viewing.
 Sensor initialization failures retain the existing mocked telemetry fallback.
 
@@ -86,8 +101,9 @@ Installation backs up the existing LightDM configuration and dashboard service
 under `/var/backups/power-dashboard-kiosk`. It takes effect on the next reboot;
 it does not terminate the current desktop session. After reboot, confirm the
 dashboard fills the display, the desktop panel is absent, telemetry updates,
-and Camera/Home navigation works. The graph and fonts still use external CDNs,
-so those assets require network access as before.
+and Camera/Home navigation works. Plotly is packaged under `static/vendor` and
+the UI uses local system fonts, so the dashboard UI no longer needs internet
+access.
 
 The kiosk installer also replaces the Raspberry Pi/Plymouth boot splash with
 the custom 800x480 boot artwork during startup and shutdown artwork during
@@ -111,6 +127,21 @@ Diagnostics: `systemctl status dashboard.service`,
 `curl http://127.0.0.1:5000/api_data`.
 Do not run another copy of `dashboard_host.py` while its service is running.
 
+### Network and power-action security
+
+The server binds to `127.0.0.1` by default, which is the safe setting for the
+local Chromium kiosk. To intentionally allow telemetry and camera viewing from
+another device, start it with `HOST=0.0.0.0`. Restart and shutdown requests are
+still rejected unless they originate from the Pi itself, and the UI supplies a
+per-process request token. Forwarded-address headers are not trusted.
+
+Run the local smoke tests with:
+
+```bash
+DASHBOARD_SKIP_CAMERA_INIT=1 DASHBOARD_DISABLE_POLLING=1 \
+  python3 -m unittest discover -s tests -v
+```
+
 If the kiosk was installed before the Power Options menu was added, install
 its permission rule once without reinstalling the kiosk:
 
@@ -118,4 +149,12 @@ its permission rule once without reinstalling the kiosk:
 cd ~/power-dashboard
 sudo bash kiosk/repair-power-permissions.sh
 sudo systemctl restart dashboard.service
+```
+
+After pulling this security update onto an existing kiosk, refresh the service
+definition so it uses loopback networking and the project environment:
+
+```bash
+cd ~/power-dashboard
+sudo bash kiosk/update-service.sh
 ```

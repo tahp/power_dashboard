@@ -7,8 +7,9 @@ Type=simple
 User=pugs
 WorkingDirectory=/home/pugs/power-dashboard
 Environment=PORT=5000
+Environment=HOST=127.0.0.1
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/pugs/power-dashboard/dashboard_host.py
+ExecStart=/home/pugs/power-dashboard/.venv/bin/python /home/pugs/power-dashboard/dashboard_host.py
 Restart=always
 RestartSec=3
 

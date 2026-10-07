@@ -1,0 +1,3 @@
+# Raspberry Pi OS supplies Flask, NumPy, OpenCV, and Picamera2 through apt.
+# The ADS1115 CircuitPython driver and its dependencies are installed here.
+adafruit-circuitpython-ads1x15>=3.0,<4

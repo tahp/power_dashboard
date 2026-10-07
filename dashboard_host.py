@@ -1,21 +1,74 @@
 #!/usr/bin/env python3
 import time
 import threading
+import hmac
+import ipaddress
+import secrets
 import cv2
 import numpy as np
 from flask import Flask, render_template_string, jsonify, Response, request
-import plotly.graph_objects as go
 import random
 import math
 import os
 import subprocess
-import sys
 
 # --- Camera Detection with Proper Handling ---
 camera = None
 camera_available = False
 camera_lock = threading.Lock()
-camera_process = None
+camera_backend = None
+
+
+class Picamera2Capture:
+    """Small OpenCV-like adapter for Raspberry Pi CSI cameras."""
+
+    def __init__(self):
+        from picamera2 import Picamera2
+
+        self.device = Picamera2()
+        config = self.device.create_video_configuration(
+            main={"size": (640, 480), "format": "RGB888"},
+            controls={"FrameRate": 30},
+        )
+        self.device.configure(config)
+        self.device.start()
+        time.sleep(0.5)
+        self.opened = True
+
+    def isOpened(self):
+        return self.opened
+
+    def read(self):
+        try:
+            # Picamera2 exposes RGB888 as BGR, matching OpenCV's convention.
+            return True, self.device.capture_array("main")
+        except Exception:
+            return False, None
+
+    def release(self):
+        if not self.opened:
+            return
+        self.opened = False
+        try:
+            self.device.stop()
+        finally:
+            self.device.close()
+
+
+def open_picamera2():
+    """Open a CSI/libcamera camera when Picamera2 is available."""
+    try:
+        cap = Picamera2Capture()
+        ret, frame = cap.read()
+        if ret and frame is not None and frame.size > 0:
+            print("✅ Raspberry Pi CSI camera found through Picamera2")
+            return cap
+        cap.release()
+    except (ImportError, RuntimeError, IndexError) as error:
+        print(f"ℹ️ Picamera2 camera unavailable: {error}")
+    except Exception as error:
+        print(f"⚠️ Picamera2 camera error: {error}")
+    return None
 
 def find_available_camera():
     """Find first working camera without triggering GUI windows"""
@@ -37,15 +90,24 @@ def find_available_camera():
     return None
 
 def init_camera():
-    """Initialize USB camera with proper handling"""
-    global camera, camera_available
+    """Initialize a CSI camera first, then fall back to USB/V4L2."""
+    global camera, camera_available, camera_backend
     
     try:
         camera_available = False
         if camera is not None:
             camera.release()
             camera = None
-        
+        camera_backend = None
+
+        cap = open_picamera2()
+        if cap is not None:
+            camera = cap
+            camera_available = True
+            camera_backend = 'picamera2'
+            print("✅ Camera initialized successfully (Picamera2)")
+            return True
+
         camera_index = find_available_camera()
         if camera_index is not None:
             # Open with proper backend
@@ -62,7 +124,8 @@ def init_camera():
                 if ret and frame is not None:
                     camera = cap
                     camera_available = True
-                    print(f"✅ Camera initialized successfully")
+                    camera_backend = 'v4l2'
+                    print("✅ Camera initialized successfully (V4L2)")
                     return True
                 cap.release()
         
@@ -72,23 +135,9 @@ def init_camera():
         print(f"❌ Camera initialization error: {e}")
         return False
 
-def kill_camera_processes():
-    """Kill processes that might be using the camera"""
-    try:
-        # Kill common camera hogging processes
-        for proc in ['mpv', 'ffplay', 'vlc', 'cheese', 'guvcview']:
-            try:
-                subprocess.run(['pkill', '-f', proc], 
-                             stderr=subprocess.DEVNULL, 
-                             stdout=subprocess.DEVNULL)
-            except:
-                pass
-        time.sleep(0.5)  # Wait for processes to release
-    except:
-        pass
-
 # Try to initialize camera
-init_camera()
+if os.environ.get('DASHBOARD_SKIP_CAMERA_INIT') != '1':
+    init_camera()
 
 # --- Hardware Initialization ---
 try:
@@ -127,6 +176,28 @@ data_lock = threading.Lock()
 
 # --- Flask Server Initialization ---
 app = Flask(__name__)
+POWER_ACTION_TOKEN = secrets.token_urlsafe(32)
+
+
+def request_is_loopback():
+    """Trust the socket peer only; forwarded headers are intentionally ignored."""
+    try:
+        return ipaddress.ip_address(request.remote_addr or '').is_loopback
+    except ValueError:
+        return False
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; object-src 'none'; frame-ancestors 'none'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return response
 
 def update_historical_data():
     """Polls the sensor (or mocks it) and appends to historical_data."""
@@ -186,9 +257,10 @@ def polling_loop():
             pass
         time.sleep(1.0)
 
-# Start background polling thread
-polling_thread = threading.Thread(target=polling_loop, daemon=True)
-polling_thread.start()
+# Start background polling thread outside isolated tests.
+if os.environ.get('DASHBOARD_DISABLE_POLLING') != '1':
+    polling_thread = threading.Thread(target=polling_loop, daemon=True)
+    polling_thread.start()
 
 # --- CAMERA STREAM GENERATOR (Thread-Safe) ---
 def generate_frames():
@@ -306,19 +378,19 @@ def camera_status():
             init_camera()
     return jsonify({
         'available': camera_available,
+        'backend': camera_backend,
         'stream_url': '/video_feed' if camera_available else None
     })
-
-@app.route('/camera/toggle')
-def toggle_camera():
-    """Toggle camera on/off"""
-    global camera_available
-    camera_available = not camera_available
-    return jsonify({'available': camera_available})
 
 @app.route('/api/power', methods=['POST'])
 def power_action():
     """Run one of the two explicit system power actions from the dashboard."""
+    if not request_is_loopback():
+        return jsonify({'error': 'Power actions are available only on the kiosk'}), 403
+    supplied_token = request.headers.get('X-Power-Token', '')
+    if not hmac.compare_digest(supplied_token, POWER_ACTION_TOKEN):
+        return jsonify({'error': 'Invalid power action token'}), 403
+
     payload = request.get_json(silent=True) or {}
     action = payload.get('action')
     commands = {
@@ -354,8 +426,7 @@ def index():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>⚡ Holographic Power Monitor</title>
-        <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
-        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+        <script src="{{ url_for('static', filename='vendor/plotly.min.js') }}"></script>
         <style>
             /* ... (same styles as before, keep all) ... */
             * {
@@ -368,7 +439,7 @@ def index():
                 background: #020812;
                 color: #ffffff;
                 overflow: hidden;
-                font-family: 'Share Tech Mono', monospace;
+                font-family: 'DejaVu Sans Mono', 'Liberation Mono', monospace;
                 height: 100vh;
                 width: 100vw;
             }
@@ -447,7 +518,7 @@ def index():
             }
             
             .hud-title {
-                font-family: 'Orbitron', sans-serif;
+                font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif;
                 font-size: 9px;
                 font-weight: 700;
                 letter-spacing: 3px;
@@ -476,7 +547,7 @@ def index():
             }
             
             .metric-value {
-                font-family: 'Orbitron', sans-serif;
+                font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif;
                 font-size: 22px;
                 font-weight: 900;
                 letter-spacing: 1px;
@@ -573,7 +644,7 @@ def index():
                 color: rgba(255, 255, 255, 0.2);
                 letter-spacing: 1px;
                 margin-left: auto;
-                font-family: 'Orbitron', sans-serif;
+                font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif;
             }
             
             @media (max-width: 850px), (max-height: 600px) {
@@ -664,7 +735,7 @@ def index():
                 position: relative; z-index: 1; align-self: flex-start;
                 background: #051220e6; padding: 6px 10px; border-radius: 6px;
             }
-            #camera-view h1 { flex-shrink: 0; font-family: 'Orbitron', sans-serif; font-size: 18px; color: #00eeff; }
+            #camera-view h1 { flex-shrink: 0; font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif; font-size: 18px; color: #00eeff; }
             #camera-message { flex-shrink: 0; margin: 12px 0; color: #8aa4b8; line-height: 1.6; }
             body[data-view="camera"] #plot-div,
             body[data-view="camera"] .hud-container { visibility: hidden; pointer-events: none; }
@@ -685,7 +756,7 @@ def index():
                 text-align: center;
             }
             .power-dialog h2 {
-                color: #ff6688; font: 700 18px 'Orbitron', sans-serif;
+                color: #ff6688; font: 700 18px 'DejaVu Sans', 'Liberation Sans', sans-serif;
                 letter-spacing: 2px; margin-bottom: 10px;
             }
             .power-dialog p { color: #9bb0bf; font-size: 12px; margin-bottom: 20px; }
@@ -798,6 +869,7 @@ def index():
 
         <script>
             const startTime = Date.now();
+            const powerActionToken = {{ power_action_token|tojson }};
             let graphDiv = document.getElementById('plot-div');
             let currentData = { time: [], voltage: [], amps: [] };
             let cameraActive = false;
@@ -866,7 +938,10 @@ def index():
                 try {
                     const response = await fetch('/api/power', {
                         method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Power-Token': powerActionToken
+                        },
                         body: JSON.stringify({action})
                     });
                     if (!response.ok) throw new Error('Power action failed');
@@ -900,7 +975,7 @@ def index():
                     const data = await response.json();
                     if (request !== cameraRequest || document.body.dataset.view !== 'camera') return;
                     if (!data.available) {
-                        cameraError('Camera unavailable. Check the USB connection, then tap Retry connection.');
+                        cameraError('Camera unavailable. Check the CSI or USB connection, then tap Retry connection.');
                         return;
                     }
                     cameraActive = true;
@@ -968,7 +1043,7 @@ def index():
                         colorbar: {
                             title: 'VOLTAGE',
                             titleside: 'right',
-                            titlefont: { color: '#00ffff', size: 10, family: 'Orbitron' },
+                            titlefont: { color: '#00ffff', size: 10, family: 'DejaVu Sans' },
                             tickfont: { color: '#00ffff', size: 8 },
                             bgcolor: 'rgba(0,0,0,0)',
                             thickness: 12,
@@ -1061,8 +1136,8 @@ def index():
                         scene: {
                             xaxis: {
                                 title: '<b>AMPERAGE</b> (A)',
-                                titlefont: { color: '#00ffff', size: 12, family: 'Orbitron' },
-                                tickfont: { color: '#00ffff', size: 9, family: 'Share Tech Mono' },
+                                titlefont: { color: '#00ffff', size: 12, family: 'DejaVu Sans' },
+                                tickfont: { color: '#00ffff', size: 9, family: 'DejaVu Sans Mono' },
                                 gridcolor: 'rgba(0, 238, 255, 0.08)',
                                 gridwidth: 1,
                                 zerolinecolor: 'rgba(0, 238, 255, 0.15)',
@@ -1074,8 +1149,8 @@ def index():
                             },
                             yaxis: {
                                 title: '<b>VOLTAGE</b> (V)',
-                                titlefont: { color: '#ff8800', size: 12, family: 'Orbitron' },
-                                tickfont: { color: '#ff8800', size: 9, family: 'Share Tech Mono' },
+                                titlefont: { color: '#ff8800', size: 12, family: 'DejaVu Sans' },
+                                tickfont: { color: '#ff8800', size: 9, family: 'DejaVu Sans Mono' },
                                 gridcolor: 'rgba(255, 136, 0, 0.08)',
                                 gridwidth: 1,
                                 zerolinecolor: 'rgba(255, 136, 0, 0.15)',
@@ -1087,8 +1162,8 @@ def index():
                             },
                             zaxis: {
                                 title: '<b>TIME</b> (s)',
-                                titlefont: { color: '#ffffff', size: 12, family: 'Orbitron' },
-                                tickfont: { color: '#ffffff', size: 9, family: 'Share Tech Mono' },
+                                titlefont: { color: '#ffffff', size: 12, family: 'DejaVu Sans' },
+                                tickfont: { color: '#ffffff', size: 9, family: 'DejaVu Sans Mono' },
                                 gridcolor: 'rgba(255, 255, 255, 0.05)',
                                 gridwidth: 1,
                                 showbackground: true,
@@ -1112,7 +1187,7 @@ def index():
                         plot_bgcolor: 'rgba(2, 8, 18, 1)',
                         margin: { l: 0, r: 0, t: 0, b: 0 },
                         legend: {
-                            font: { color: '#00ffff', family: 'Share Tech Mono', size: 9 },
+                            font: { color: '#00ffff', family: 'DejaVu Sans Mono', size: 9 },
                             bgcolor: 'rgba(2, 8, 18, 0.7)',
                             borderwidth: 1,
                             bordercolor: 'rgba(0, 238, 255, 0.2)'
@@ -1130,7 +1205,10 @@ def index():
                         if (data.time && data.time.length > 2) {
                             currentData = data;
                             const graphData = createGraph(data.time, data.voltage, data.amps);
-                            Plotly.react('plot-div', graphData.data, graphData.layout);
+                            Plotly.react('plot-div', graphData.data, graphData.layout, {
+                                displaylogo: false,
+                                responsive: true
+                            });
                         }
                     })
                     .catch(err => console.error('Graph error:', err));
@@ -1198,10 +1276,11 @@ def index():
         </script>
     </body>
     </html>
-    """)
+    """, power_action_token=POWER_ACTION_TOKEN)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    host = os.environ.get('HOST', '127.0.0.1')
     print(f"\n[INFO]: ⚡ Sci-Fi Holographic Dashboard with Embedded Camera")
     print(f"Dashboard running at: http://localhost:{port}")
     
@@ -1210,12 +1289,12 @@ if __name__ == '__main__':
         print("   Select Camera in the left navigation to view the embedded feed.")
     else:
         print(f"📹 No camera detected - Camera page will show connection instructions")
-        print("   To use camera: plug in USB camera and restart")
+        print("   Connect a CSI or USB camera, then use Retry connection")
     
     print("\nPress Ctrl+C to stop\n")
     
     try:
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
+        app.run(host=host, port=port, debug=False, threaded=True)
     except KeyboardInterrupt:
         print("\n\nShutting down...")
         if camera is not None:

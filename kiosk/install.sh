@@ -29,6 +29,7 @@ if [ -e "$backup" ]; then
     exit 1
 fi
 for binary in /usr/bin/labwc /usr/bin/chromium /usr/bin/curl; do test -x "$binary"; done
+test -x /home/pugs/power-dashboard/.venv/bin/python
 test -f /etc/systemd/system/dashboard.service
 test -f /etc/lightdm/lightdm.conf
 mkdir -p "$backup"
