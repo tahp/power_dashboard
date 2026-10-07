@@ -1,6 +1,6 @@
 [Unit]
 Description=Power Dashboard Backend
-After=network.target
+After=local-fs.target
 
 [Service]
 Type=simple

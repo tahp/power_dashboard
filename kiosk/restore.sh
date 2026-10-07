@@ -1,10 +1,14 @@
 #!/bin/bash
 set -euo pipefail
+cd "$(dirname "$0")"
 if [ "$(id -u)" != 0 ]; then
     echo "Run with sudo bash kiosk/restore.sh" >&2
     exit 1
 fi
 backup=/var/backups/power-dashboard-kiosk
+if systemctl is-enabled power-dashboard-docker-delay.timer >/dev/null 2>&1; then
+    bash optimize-boot.sh --restore
+fi
 test -f "$backup/lightdm.conf"
 test -f "$backup/dashboard.service"
 test -f "$backup/cmdline.txt"

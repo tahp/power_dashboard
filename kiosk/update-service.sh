@@ -8,9 +8,10 @@ if [ "$(id -u)" != 0 ]; then
 fi
 
 test -x /home/pugs/power-dashboard/.venv/bin/python
+install -Dm755 browser.sh /usr/local/libexec/power-dashboard-browser
 install -m644 dashboard.service /etc/systemd/system/dashboard.service
 install -Dm440 power-dashboard-sudoers /etc/sudoers.d/power-dashboard
 visudo -cf /etc/sudoers.d/power-dashboard
 systemctl daemon-reload
 systemctl restart dashboard.service
-echo "Dashboard service updated and restarted on loopback."
+echo "Dashboard service and kiosk browser updated."

@@ -158,3 +158,25 @@ definition so it uses loopback networking and the project environment:
 cd ~/power-dashboard
 sudo bash kiosk/update-service.sh
 ```
+
+## Faster boot with Docker/Jellyfin preserved
+
+On a Pi that also runs Docker, the optional boot optimization starts the
+dashboard first and delays Docker by 45 seconds. Containers with an automatic
+restart policy, such as Jellyfin, still start normally after that delay. It
+also installs the network-independent dashboard service and the streamlined
+Chromium launcher, which keeps its disposable kiosk profile in memory instead
+of reading an accumulated profile from the microSD card.
+
+```bash
+cd ~/power-dashboard
+sudo bash kiosk/update-service.sh
+sudo bash kiosk/optimize-boot.sh
+sudo reboot
+```
+
+Restore normal Docker startup with:
+
+```bash
+sudo bash kiosk/optimize-boot.sh --restore
+```

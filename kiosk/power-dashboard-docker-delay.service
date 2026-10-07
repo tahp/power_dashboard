@@ -1,0 +1,6 @@
+[Unit]
+Description=Start Docker after the Power Dashboard kiosk
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start docker.service

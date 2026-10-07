@@ -1,0 +1,10 @@
+[Unit]
+Description=Delay Docker startup until after the Power Dashboard kiosk
+
+[Timer]
+OnBootSec=45s
+AccuracySec=1s
+Unit=power-dashboard-docker-delay.service
+
+[Install]
+WantedBy=timers.target
